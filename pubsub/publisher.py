@@ -1,148 +1,184 @@
 import json
-import logging
+import sys
+import time
 import os
 from datetime import datetime, timezone
-from google.cloud import pubsub_v1, bigquery
-from dotenv import load_dotenv
+from kafka import KafkaConsumer
+from google.cloud import pubsub_v1
+from google.api_core import gapic_v1
 
-load_dotenv()
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config
+from schemas.schema_registry import validate_message, check_health
 
-PROJECT_ID = os.getenv("GCP_PROJECT_ID")
-DATASET_ID = os.getenv("BIGQUERY_DATASET")
+log = config.setup_logging("publisher")
 
-SUBSCRIPTION_MAP = {
-    "cdc-orders-sub":      "orders",
-    "cdc-order-items-sub": "order_items",
-    "cdc-shipments-sub":   "shipments",
-    "cdc-delivery-sub":    "delivery_events"
+# ── Enable message ordering on publisher client ──
+publisher_options = pubsub_v1.types.PublisherOptions(enable_message_ordering=True)
+publisher         = pubsub_v1.PublisherClient(publisher_options=publisher_options)
+
+metrics = {
+    "total_received":  0,
+    "total_published": 0,
+    "total_rejected":  0,
+    "total_errors":    0,
+    "by_topic":        {}
 }
 
-# Timestamp columns per table — Debezium sends microseconds
-TIMESTAMP_COLS = {
-    "orders":          ["order_date", "updated_at"],
-    "order_items":     [],
-    "shipments":       ["shipped_at", "estimated_arrival", "updated_at"],
-    "delivery_events": ["event_time"]
-}
+def log_metrics():
+    log.info(
+        f"📊 Metrics | "
+        f"received={metrics['total_received']} "
+        f"published={metrics['total_published']} "
+        f"rejected={metrics['total_rejected']} "
+        f"errors={metrics['total_errors']} "
+        f"by_topic={metrics['by_topic']}"
+    )
 
-# Valid columns per BQ table
-VALID_COLS = {
-    "orders": [
-        "order_id", "customer_id", "order_status", "total_amount",
-        "payment_method", "order_date", "updated_at",
-        "cdc_operation", "cdc_timestamp"
-    ],
-    "order_items": [
-        "item_id", "order_id", "product_id", "quantity",
-        "unit_price", "subtotal", "cdc_operation", "cdc_timestamp"
-    ],
-    "shipments": [
-        "shipment_id", "order_id", "courier", "tracking_number",
-        "origin_city", "destination_city", "shipment_status",
-        "shipped_at", "estimated_arrival", "updated_at",
-        "cdc_operation", "cdc_timestamp"
-    ],
-    "delivery_events": [
-        "event_id", "shipment_id", "event_type", "event_location",
-        "event_note", "event_time", "cdc_operation", "cdc_timestamp"
-    ]
-}
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s"
-)
-log = logging.getLogger(__name__)
-
-bq_client  = bigquery.Client(project=PROJECT_ID)
-subscriber = pubsub_v1.SubscriberClient()
-
-def convert_timestamps(data: dict, table_id: str) -> dict:
-    """Convert Debezium microsecond timestamps to BQ-compatible ISO strings."""
-    ts_cols = TIMESTAMP_COLS.get(table_id, [])
-    for col in ts_cols:
-        if col in data and data[col] is not None:
-            try:
-                # Debezium sends microseconds since epoch
-                micros = int(data[col])
-                seconds = micros / 1_000_000
-                dt = datetime.fromtimestamp(seconds, tz=timezone.utc)
-                data[col] = dt.strftime("%Y-%m-%d %H:%M:%S")
-            except Exception as e:
-                log.warning(f"⚠️ Could not convert {col}: {data[col]} — {e}")
-                data[col] = None
-    return data
-
-def filter_columns(data: dict, table_id: str) -> dict:
-    """Keep only columns that exist in the BQ table."""
-    valid = VALID_COLS.get(table_id, [])
-    return {k: v for k, v in data.items() if k in valid}
-
-def insert_to_bigquery(table_id: str, data: dict, operation: str):
-    """Insert CDC event data into BigQuery."""
+def parse_debezium_message(raw: dict) -> dict | None:
     try:
+        payload = raw.get("payload", {})
+        op      = payload.get("op")
+        before  = payload.get("before")
+        after   = payload.get("after")
+        if op is None:
+            return None
+        op_map = {"c": "INSERT", "u": "UPDATE", "d": "DELETE", "r": "READ"}
+        cdc_op = op_map.get(op, op)
+        data   = before if cdc_op == "DELETE" else after
         if data is None:
-            return
-
-        row = dict(data)
-        row["cdc_operation"] = operation
-        row["cdc_timestamp"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-
-        # Convert timestamps from microseconds
-        row = convert_timestamps(row, table_id)
-
-        # Filter to valid columns only
-        row = filter_columns(row, table_id)
-
-        table_ref = f"{PROJECT_ID}.{DATASET_ID}.{table_id}"
-        errors    = bq_client.insert_rows_json(table_ref, [row])
-
-        if errors:
-            log.error(f"❌ BQ insert errors for {table_id}: {errors}")
-        else:
-            log.info(f"✅ Inserted to BQ {table_id} | op={operation}")
-
+            return None
+        return {
+            "cdc_operation": cdc_op,
+            "cdc_timestamp": datetime.now(timezone.utc).isoformat(),
+            "before":        before,
+            "after":         after,
+            "data":          data
+        }
     except Exception as e:
-        log.error(f"❌ Failed to insert to BigQuery: {e}")
+        log.error(f"❌ Parse error: {e}")
+        return None
 
-def make_callback(table_id: str):
-    def callback(message: pubsub_v1.subscriber.message.Message):
+def validate_against_schema(data: dict, kafka_topic: str) -> tuple[bool, list]:
+    subject = config.KAFKA_TO_SCHEMA.get(kafka_topic)
+    if not subject or data is None:
+        return True, []
+    data_with_cdc = {
+        **data,
+        "cdc_operation": "INSERT",
+        "cdc_timestamp": datetime.now(timezone.utc).isoformat()
+    }
+    return validate_message(data_with_cdc, subject)
+
+def publish_to_pubsub(topic_path: str, message: dict, kafka_topic: str) -> bool:
+    data         = message.get("data") or {}
+    cdc_op       = message.get("cdc_operation", "UNKNOWN")
+    order_id     = str(data.get("order_id", "")) if isinstance(data, dict) else ""
+    ordering_key = config.build_ordering_key(
+        {"order_id": order_id} if order_id else {},
+        cdc_op
+    )
+
+    attributes = {
+        "kafka_topic":    kafka_topic,
+        "cdc_operation":  cdc_op,
+        "cdc_timestamp":  message.get("cdc_timestamp", ""),
+        "schema_version": "1",
+        "order_status":   str(data.get("order_status", "")) if isinstance(data, dict) else "",
+        "courier":        str(data.get("courier", ""))       if isinstance(data, dict) else "",
+        "event_type":     str(data.get("event_type", ""))    if isinstance(data, dict) else "",
+    }
+
+    payload = json.dumps(message).encode("utf-8")
+
+    for attempt in range(1, config.MAX_RETRIES + 1):
         try:
-            data      = json.loads(message.data.decode("utf-8"))
-            operation = message.attributes.get("cdc_operation", "UNKNOWN")
-            payload   = data.get("data") or data.get("after")
-
-            log.info(f"📨 Received | table={table_id} | op={operation}")
-            insert_to_bigquery(table_id, payload, operation)
-            message.ack()
-
+            future = publisher.publish(
+                topic_path,
+                payload,
+                ordering_key=ordering_key,
+                **attributes
+            )
+            msg_id = future.result(timeout=config.PUBLISH_TIMEOUT)
+            metrics["total_published"] += 1
+            topic_key = kafka_topic.split(".")[-1]
+            metrics["by_topic"][topic_key] = \
+                metrics["by_topic"].get(topic_key, 0) + 1
+            log.info(
+                f"✅ Published | topic={topic_key} "
+                f"op={cdc_op} key={ordering_key} msg_id={msg_id}"
+            )
+            return True
         except Exception as e:
-            log.error(f"❌ Callback error: {e}")
-            message.nack()
+            if attempt < config.MAX_RETRIES:
+                wait = config.RETRY_BACKOFF_BASE ** attempt
+                log.warning(f"⚠️ Retry {attempt}/{config.MAX_RETRIES} in {wait}s: {e}")
+                time.sleep(wait)
+            else:
+                log.error(f"❌ Failed after {config.MAX_RETRIES} attempts: {e}")
+                metrics["total_errors"] += 1
+                return False
 
-    return callback
+def handle_rejected(data: dict, kafka_topic: str, errors: list):
+    metrics["total_rejected"] += 1
+    log.warning(
+        f"🚫 Rejected | topic={kafka_topic} | "
+        f"errors={errors} | data={json.dumps(data)[:200]}"
+    )
 
 def main():
-    log.info(f"🚀 Starting Pub/Sub → BigQuery subscriber")
-    log.info(f"   Project : {PROJECT_ID}")
-    log.info(f"   Dataset : {DATASET_ID}")
+    log.info("🚀 Starting Kafka → Pub/Sub bridge with ordering keys")
+    log.info(f"   Project  : {config.GCP_PROJECT_ID}")
+    log.info(f"   Topics   : {config.KAFKA_TOPICS}")
+    log.info(f"   Ordering : enabled")
 
-    futures = []
-    for sub_id, table_id in SUBSCRIPTION_MAP.items():
-        sub_path = subscriber.subscription_path(PROJECT_ID, sub_id)
-        future   = subscriber.subscribe(sub_path, callback=make_callback(table_id))
-        futures.append(future)
-        log.info(f"✅ Subscribed to {sub_path} → BQ table {table_id}")
+    if not check_health():
+        log.warning("⚠️ Schema Registry unavailable — validation skipped")
 
-    log.info("⏳ Listening for messages...")
+    consumer = KafkaConsumer(
+        *config.KAFKA_TOPICS,
+        bootstrap_servers=config.KAFKA_BOOTSTRAP,
+        auto_offset_reset="latest",
+        enable_auto_commit=True,
+        group_id=config.KAFKA_GROUP_ID,
+        value_deserializer=lambda m: json.loads(m.decode("utf-8")) if m else None
+    )
 
-    try:
-        for future in futures:
-            future.result()
-    except KeyboardInterrupt:
-        log.info("🛑 Shutting down subscriber...")
-        for future in futures:
-            future.cancel()
+    log.info("✅ Connected to Kafka, waiting for CDC events...")
+    msg_count = 0
+
+    for msg in consumer:
+        try:
+            if msg.value is None:
+                continue
+            if not isinstance(msg.value, dict):
+                continue
+
+            metrics["total_received"] += 1
+            msg_count   += 1
+            kafka_topic  = msg.topic
+            parsed       = parse_debezium_message(msg.value)
+
+            if parsed is None:
+                continue
+
+            data = parsed.get("data")
+            is_valid, errors = validate_against_schema(data, kafka_topic)
+            if not is_valid:
+                handle_rejected(data, kafka_topic, errors)
+                continue
+
+            full_message = {**parsed, "schema_validated": True, "schema_version": "1"}
+            topic_id     = config.KAFKA_TO_PUBSUB.get(kafka_topic)
+            topic_path   = publisher.topic_path(config.GCP_PROJECT_ID, topic_id)
+            publish_to_pubsub(topic_path, full_message, kafka_topic)
+
+            if msg_count % config.METRICS_LOG_EVERY == 0:
+                log_metrics()
+
+        except Exception as e:
+            log.error(f"❌ Error processing message: {e}")
+            metrics["total_errors"] += 1
 
 if __name__ == "__main__":
     main()

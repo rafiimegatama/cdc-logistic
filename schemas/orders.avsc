@@ -1,0 +1,17 @@
+{
+  "type": "record",
+  "name": "Order",
+  "namespace": "com.logistics.cdc",
+  "doc": "CDC event for logistics orders table",
+  "fields": [
+    {"name": "order_id",       "type": ["null", "int"],    "default": null},
+    {"name": "customer_id",    "type": ["null", "int"],    "default": null},
+    {"name": "order_status",   "type": ["null", "string"], "default": null},
+    {"name": "total_amount",   "type": ["null", "double"], "default": null},
+    {"name": "payment_method", "type": ["null", "string"], "default": null},
+    {"name": "order_date",     "type": ["null", "long"],   "default": null},
+    {"name": "updated_at",     "type": ["null", "long"],   "default": null},
+    {"name": "cdc_operation",  "type": ["null", "string"], "default": null},
+    {"name": "cdc_timestamp",  "type": ["null", "string"], "default": null}
+  ]
+}

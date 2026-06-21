@@ -1,0 +1,16 @@
+{
+  "type": "record",
+  "name": "OrderItem",
+  "namespace": "com.logistics.cdc",
+  "doc": "CDC event for logistics order_items table",
+  "fields": [
+    {"name": "item_id",       "type": ["null", "int"],    "default": null},
+    {"name": "order_id",      "type": ["null", "int"],    "default": null},
+    {"name": "product_id",    "type": ["null", "int"],    "default": null},
+    {"name": "quantity",      "type": ["null", "int"],    "default": null},
+    {"name": "unit_price",    "type": ["null", "double"], "default": null},
+    {"name": "subtotal",      "type": ["null", "double"], "default": null},
+    {"name": "cdc_operation", "type": ["null", "string"], "default": null},
+    {"name": "cdc_timestamp", "type": ["null", "string"], "default": null}
+  ]
+}

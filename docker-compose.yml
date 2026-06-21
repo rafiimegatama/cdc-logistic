@@ -45,12 +45,27 @@ services:
     networks:
       - cdc_network
 
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.4.0
+    container_name: cdc_schema_registry
+    depends_on:
+      - kafka
+    ports:
+      - "8081:8081"
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: kafka:29092
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+    networks:
+      - cdc_network
+
   debezium:
     image: debezium/connect:2.4
     container_name: cdc_debezium
     depends_on:
       - kafka
       - postgres
+      - schema-registry
     ports:
       - "8083:8083"
     environment:
@@ -67,11 +82,13 @@ services:
     container_name: cdc_kafka_ui
     depends_on:
       - kafka
+      - schema-registry
     ports:
       - "8080:8080"
     environment:
       KAFKA_CLUSTERS_0_NAME: local
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      KAFKA_CLUSTERS_0_SCHEMAREGISTRY: http://schema-registry:8081
     networks:
       - cdc_network
 

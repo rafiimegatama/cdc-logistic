@@ -22,3 +22,11 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Terraform
+terraform/.terraform/
+terraform/**/.terraform/
+terraform/**/*.tfstate
+terraform/**/*.tfstate.backup
+terraform/**/terraform.tfvars
+terraform/**/.terraform.lock.hcl

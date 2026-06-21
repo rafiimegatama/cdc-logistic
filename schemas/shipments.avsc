@@ -1,0 +1,20 @@
+{
+  "type": "record",
+  "name": "Shipment",
+  "namespace": "com.logistics.cdc",
+  "doc": "CDC event for logistics shipments table",
+  "fields": [
+    {"name": "shipment_id",       "type": ["null", "int"],    "default": null},
+    {"name": "order_id",          "type": ["null", "int"],    "default": null},
+    {"name": "courier",           "type": ["null", "string"], "default": null},
+    {"name": "tracking_number",   "type": ["null", "string"], "default": null},
+    {"name": "origin_city",       "type": ["null", "string"], "default": null},
+    {"name": "destination_city",  "type": ["null", "string"], "default": null},
+    {"name": "shipment_status",   "type": ["null", "string"], "default": null},
+    {"name": "shipped_at",        "type": ["null", "long"],   "default": null},
+    {"name": "estimated_arrival", "type": ["null", "long"],   "default": null},
+    {"name": "updated_at",        "type": ["null", "long"],   "default": null},
+    {"name": "cdc_operation",     "type": ["null", "string"], "default": null},
+    {"name": "cdc_timestamp",     "type": ["null", "string"], "default": null}
+  ]
+}

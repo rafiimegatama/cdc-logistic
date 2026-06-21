@@ -1,0 +1,16 @@
+{
+  "type": "record",
+  "name": "DeliveryEvent",
+  "namespace": "com.logistics.cdc",
+  "doc": "CDC event for logistics delivery_events table",
+  "fields": [
+    {"name": "event_id",       "type": ["null", "int"],    "default": null},
+    {"name": "shipment_id",    "type": ["null", "int"],    "default": null},
+    {"name": "event_type",     "type": ["null", "string"], "default": null},
+    {"name": "event_location", "type": ["null", "string"], "default": null},
+    {"name": "event_note",     "type": ["null", "string"], "default": null},
+    {"name": "event_time",     "type": ["null", "long"],   "default": null},
+    {"name": "cdc_operation",  "type": ["null", "string"], "default": null},
+    {"name": "cdc_timestamp",  "type": ["null", "string"], "default": null}
+  ]
+}
