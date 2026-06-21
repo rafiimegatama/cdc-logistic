@@ -92,6 +92,46 @@ services:
     networks:
       - cdc_network
 
+  # ── NEW: Flink JobManager ──
+  flink-jobmanager:
+    build: ./flink
+    container_name: cdc_flink_jobmanager
+    command: jobmanager
+    ports:
+      - "8082:8081"
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        jobmanager.memory.process.size: 1600m
+        parallelism.default: 1
+      GOOGLE_APPLICATION_CREDENTIALS: /opt/gcp/credentials.json
+    volumes:
+      - ./flink/jobs:/opt/flink/jobs
+      - ./flink/checkpoints:/opt/flink/checkpoints
+      - ./.env:/opt/flink/.env:ro
+    networks:
+      - cdc_network
+
+  # ── NEW: Flink TaskManager ──
+  flink-taskmanager:
+    build: ./flink
+    container_name: cdc_flink_taskmanager
+    command: taskmanager
+    depends_on:
+      - flink-jobmanager
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        taskmanager.memory.process.size: 1600m
+        taskmanager.numberOfTaskSlots: 2
+      GOOGLE_APPLICATION_CREDENTIALS: /opt/gcp/credentials.json
+    volumes:
+      - ./flink/jobs:/opt/flink/jobs
+      - ./flink/checkpoints:/opt/flink/checkpoints
+      - ./.env:/opt/flink/.env:ro
+    networks:
+      - cdc_network
+
 volumes:
   postgres_data:
 

@@ -162,6 +162,24 @@ module "bigquery" {
       schema      = file("${path.module}/../../schemas/mart_order_summary.json")
       description = "Order items summary mart"
     }
+    "flink_order_agg" = {
+      schema      = file("${path.module}/../../schemas/flink_order_agg.json")
+      description = "Flink 5-min tumbling window order aggregation"
+      partition   = true
+      partition_field = "window_start"
+    }
+    "flink_delivery_sla" = {
+      schema      = file("${path.module}/../../schemas/flink_delivery_sla.json")
+      description = "Flink delivery SLA breach detection"
+      partition   = true
+      partition_field = "window_start"
+    }
+    "flink_anomalies" = {
+      schema      = file("${path.module}/../../schemas/flink_anomalies.json")
+      description = "Flink anomaly detection output"
+      partition   = true
+      partition_field = "detected_at"
+    }
     "mart_delivery_kpi" = {
       schema      = file("${path.module}/../../schemas/mart_delivery_kpi.json")
       description = "Delivery KPI mart"
